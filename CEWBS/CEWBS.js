@@ -1,0 +1,290 @@
+// var meshers = {
+// 	'greedy': require('./meshers/greedy_tri.js').mesher,
+// }
+import { GreedyMesh } from './greedy_tri.js'
+import { util } from './util.js'
+var CEWBS = {};
+CEWBS.Util = util
+
+CEWBS.version = '%VERSION%';
+
+CEWBS.VoxelMesh = function(name, scene) {
+	BABYLON.Mesh.call(this, name, scene);
+	this.noVoxels = true;
+	this.oldVisibility = true;
+
+	//Set up transparent mesh
+	this.transparentMesh = new BABYLON.Mesh(name+'-tsp', scene);
+	this.transparentMesh.noVoxels = true;
+	this.transparentMesh.oldVisibility = true;
+	this.transparentMesh.hasVertexAlpha = true;
+	this.transparentMesh.parent = this;
+	
+	this.transparentMesh.root = this;
+	this.root = this;
+}
+
+CEWBS.VoxelMesh.prototype = Object.create(BABYLON.Mesh.prototype);
+CEWBS.VoxelMesh.prototype.hasTransparency = false;
+CEWBS.VoxelMesh.prototype.constructor = CEWBS.VoxelMesh;
+CEWBS.VoxelMesh.prototype.mesher = GreedyMesh;
+
+
+CEWBS.VoxelMesh.prototype.evaluateFunction = function(id, meta) {
+	return !!id;
+}
+//Default coloring function
+CEWBS.VoxelMesh.prototype.coloringFunction = function(id) {
+	return [id/5, id/5, id/5];
+}
+
+//Set the voxel at x,y,z position, with the id metadata.
+CEWBS.VoxelMesh.prototype.setVoxelAt = function(pos, id, meta) {
+	if(this.voxelData.voxels != null) {
+		if(Array.isArray(pos)) {
+			this.voxelData.voxels[this.positionToIndex(pos)] = [id,meta];
+			return true;
+		}
+	}
+	
+	return 'Error: please set the dimensions of the voxelData first!';
+}
+
+CEWBS.VoxelMesh.prototype.setMetaAt = function(pos, meta) {
+	if(this.voxelData.voxels != null) {
+		if(Array.isArray(pos)) {
+			var index = this.positionToIndex(pos);
+			if(Array.isArray(this.voxelData.voxels[index])) {
+				this.voxelData.voxels[this.positionToIndex(pos)][1] = meta;
+				return true;
+			}
+		}
+	}
+	
+	return 'Error: please set the dimensions of the voxelData first!';
+}
+
+//Set a collection of voxels at different positions. Each can have it's own id or use the group id.
+//Useful for importing the non-raw export.
+CEWBS.VoxelMesh.prototype.setVoxelBatch = function(voxels, id, meta) {
+	for(var i = 0; i < voxels.length; i++) {
+		var voxel = voxels[i];
+		if(voxel.length < 4 && meta != null) {
+			this.setVoxelAt(voxel, id, meta);
+		} else if (voxel.length < 5 && meta != null) {
+			this.setVoxelAt(voxel, voxel[3], meta);
+		} else {
+			this.setVoxelAt(voxel, voxel[3], voxel[4]);
+		}
+	}
+}
+
+//Returns the voxel id at coordinates pos [x,y,z].
+CEWBS.VoxelMesh.prototype.getVoxelAt = function(pos) {
+	if(this.voxelData.voxels != null) {
+		return this.voxelData.voxels[this.positionToIndex(pos)];
+	} else {
+		return 'Error: please set the dimensions of the voxelData first!';
+	}
+}
+
+/*Set the entire voxel volume. Should be in the form:
+{
+	dimensions: [x,y,z]
+	voxels: [] // Length should be dimensions x*y*z
+}*/
+CEWBS.VoxelMesh.prototype.setVoxelData = function(voxelData) {
+	this.voxelData = voxelData;
+}
+
+//Returns the entire voxel volume.
+//Warning, this is dimension-dependant, so don't try to use it in a differently-sized volume. use exportVoxelData for that.
+CEWBS.VoxelMesh.prototype.getVoxelData = function() {
+	return this.voxelData;
+}
+
+//Sets the dimensions of the voxel volume. Input should be ([x,y,z]);
+CEWBS.VoxelMesh.prototype.setDimensions = function(dims) {
+	if (Array.isArray(dims) && dims.length === 3) {
+		if(this.voxelData == null) {
+			this.voxelData = {};
+		}
+		
+		this.voxelData.dimensions = dims;
+		if(this.voxelData.voxels == null) {
+			this.voxelData.voxels = new Array(dims[0]*dims[1]*dims[2]);
+		}
+	} else {
+		return 'Error: dimensions must be an array [x,y,z]';
+	}
+}
+
+CEWBS.VoxelMesh.prototype.indexToPosition = function(i) {
+	return [i % this.voxelData.dimensions[0], Math.floor((i / this.voxelData.dimensions[0]) % this.voxelData.dimensions[1]), Math.floor(i / (this.voxelData.dimensions[1] * this.voxelData.dimensions[0]))]
+}
+
+CEWBS.VoxelMesh.prototype.positionToIndex = function(pos) {
+	return pos[0]+(pos[1]*this.voxelData.dimensions[0])+(pos[2]*this.voxelData.dimensions[0]*this.voxelData.dimensions[1]);
+}
+
+//Used to update the actual mesh after voxels have been set.
+CEWBS.VoxelMesh.prototype.updateMesh = function(passID) {
+		if(passID == null) passID = 0;
+		
+		var rawMesh = this.mesher(this.voxelData.voxels, this.voxelData.dimensions, this.evaluateFunction, passID);
+		
+		var indices = [];
+		var colors = [];
+	
+		for(var i=0; i<rawMesh.faces.length; ++i) {
+			var q = rawMesh.faces[i];
+			indices.push(q[2], q[1], q[0]);
+			
+			//Get the color for this voxel
+			var color = this.coloringFunction(q[3], q[4]);
+			if(color == null || color.length < 3) {
+				color = [300,75,300,255];
+			} else if (color.length === 3) {
+				color.push(255);
+			}
+			
+			for(var i2 = 0; i2 < 3; i2++) {
+				colors[q[i2]*4] = color[0]/255;
+				colors[(q[i2]*4)+1] = color[1]/255;
+				colors[(q[i2]*4)+2] = color[2]/255;
+				colors[(q[i2]*4)+3] = color[3]/255;
+				continue;
+			}
+		}
+					
+		var vertexData = new BABYLON.VertexData();
+		vertexData.positions = rawMesh.vertices;
+		vertexData.indices = indices;
+		vertexData.normals = rawMesh.normals;
+		vertexData.colors = colors;
+		
+		if(!passID) {
+			if(vertexData.positions.length > 0) {
+				if(this.noVoxels === true) {
+					this.isVisible = this.oldVisibility;
+					this.noVoxels = false;
+				}
+				
+				vertexData.applyToMesh(this, 1);
+				this._updateBoundingInfo();
+				
+				if(this.hasTransparency) {
+					this.updateMesh(1);
+				}
+			} else {
+				this.noVoxels = true;
+				this.oldVisibility = this.isVisible;
+				this.isVisible = false;
+			}
+		} else if (passID === 1) {
+			if(vertexData.positions.length > 0) {
+				if(this.transparentMesh.noVoxels === true) {
+					this.transparentMesh.isVisible = this.transparentMesh.oldVisibility;
+					this.transparentMesh.noVoxels = false;
+				}
+				vertexData.applyToMesh(this.transparentMesh, 1);
+				this.transparentMesh._updateBoundingInfo();
+			} else {
+				this.transparentMesh.noVoxels = true;
+				this.transparentMesh.oldVisibility = this.transparentMesh.isVisible;
+				this.transparentMesh.isVisible = false;
+			}
+		}
+}
+
+//Utility functions//
+
+//Set the origin (pivot point) of the mesh to the center of the dimensions.
+//If ignoreY is true, then the y axis will remain 0.
+CEWBS.VoxelMesh.prototype.originToCenterOfBounds = function(ignoreY) {
+	var pivot = [
+		-this.voxelData.dimensions[0]/2,
+		-this.voxelData.dimensions[1]/2,
+		-this.voxelData.dimensions[2]/2
+	]
+	
+	if(ignoreY) {
+		pivot[1] = 0;
+	}
+	
+	this.setPivot(pivot);
+}
+
+//Sets the origin (pivot point) of the mesh.
+CEWBS.VoxelMesh.prototype.setPivot = function(pivot) {
+	var babylonPivot = BABYLON.Matrix.Translation(pivot[0],pivot[1],pivot[2]);
+	
+	this.setPivotMatrix(babylonPivot);
+}
+
+/*Exports the voxel data to a more portable form which is dimension-independent and can be more compact.
+format:
+{
+	dimensions: [x,y,z],
+	voxels: [
+		[0,0,0, id, meta], //x,y,z coordinates, then the voxel id, then metadata.
+		[1,1,0, id, meta],
+	],
+}
+*/
+
+//Import a Zoxel file into a CEWBS VoxelMesh
+
+
+//Handle Raycasting and picking to get the voxel coordinates
+CEWBS.VoxelMesh.handlePick = function(pickResult) {
+	var mesh = pickResult.pickedMesh.root;
+	var point = pickResult.pickedPoint;
+	
+	var m = new BABYLON.Matrix();
+	mesh.getWorldMatrix().invertToRef(m);
+	var v = BABYLON.Vector3.TransformCoordinates(point, m);
+	var x,y,z, voxel1,voxel2;
+	
+	var offsetX = +(v.x-v.x.toFixed(0)).toFixed(4);
+	var offsetY = +(v.y-v.y.toFixed(0)).toFixed(4);
+	var offsetZ = +(v.z-v.z.toFixed(0)).toFixed(4);
+	
+	if(offsetX === 0) {
+		x = Math.round(v.x);
+		y = Math.floor(v.y);
+		z = Math.floor(v.z);
+		if(x>=mesh.voxelData.dimensions[0]) x=mesh.voxelData.dimensions[0]-1;
+
+		voxel1 = [x,y,z];
+		voxel2 = [x-1,y,z];
+	} else if (offsetY === 0) {
+		x = Math.floor(v.x);
+		y = Math.round(v.y);
+		z = Math.floor(v.z);
+		if(y>=mesh.voxelData.dimensions[1]) y=mesh.voxelData.dimensions[1]-1;
+
+		voxel1 = [x,y,z];
+		voxel2 = [x,y-1,z];
+	} else if (offsetZ === 0) {
+		x = Math.floor(v.x);
+		y = Math.floor(v.y);
+		z = Math.round(v.z);
+		if(z>=mesh.voxelData.dimensions[2]) z=mesh.voxelData.dimensions[2]-1;
+
+		voxel1 = [x,y,z];
+		voxel2 = [x,y,z-1];
+	}
+	
+	if(!mesh.getVoxelAt(voxel1)) {
+		pickResult.over = voxel1;
+		pickResult.under = voxel2;
+		return pickResult;
+	} else {
+		pickResult.over = voxel2;
+		pickResult.under = voxel1;
+		return pickResult;
+	}
+}
+
+export { CEWBS }
